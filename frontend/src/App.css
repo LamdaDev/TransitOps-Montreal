@@ -300,6 +300,7 @@ td {
   border-bottom: 1px solid var(--border);
   padding: 12px 10px;
   text-align: left;
+  transition: background-color 160ms ease;
   white-space: nowrap;
 }
 
@@ -311,6 +312,43 @@ th {
 
 td {
   font-size: 0.92rem;
+}
+
+.vehicle-row {
+  cursor: pointer;
+}
+
+.vehicle-row:hover td {
+  background: var(--surface-muted);
+}
+
+.vehicle-row.is-tracked td {
+  background: var(--accent-soft);
+}
+
+.vehicle-row.is-tracked td:first-child {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.vehicle-select-button {
+  background: transparent;
+  border: 0;
+  color: var(--text-primary);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  padding: 0;
+  text-align: left;
+}
+
+.vehicle-row:hover .vehicle-select-button,
+.vehicle-select-button[aria-pressed="true"] {
+  color: var(--accent);
+}
+
+.vehicle-select-button:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent) 42%, transparent);
+  outline-offset: 3px;
 }
 
 .status-pill {

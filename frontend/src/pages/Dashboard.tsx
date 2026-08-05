@@ -20,6 +20,7 @@ interface DashboardProps {
 
 export function Dashboard({ theme, onThemeChange }: DashboardProps) {
   const [selectedRoute, setSelectedRoute] = useState(defaultRoute);
+  const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -72,6 +73,11 @@ export function Dashboard({ theme, onThemeChange }: DashboardProps) {
     }
   }
 
+  function handleRouteSelect(routeId: string) {
+    setSelectedRoute(routeId);
+    setSelectedVehicleId(null);
+  }
+
   return (
     <div className="app-shell">
       <Header
@@ -89,7 +95,7 @@ export function Dashboard({ theme, onThemeChange }: DashboardProps) {
           <RouteSelector
             routes={data?.routes ?? [{ id: defaultRoute, shortName: "24", longName: "Sherbrooke" }]}
             selectedRoute={selectedRoute}
-            onSelectRoute={setSelectedRoute}
+            onSelectRoute={handleRouteSelect}
           />
           <div className="route-title">
             <span>Selected</span>
@@ -118,10 +124,17 @@ export function Dashboard({ theme, onThemeChange }: DashboardProps) {
           <>
             <SummaryCards metrics={data.routeMetrics} />
             <section className="dashboard-grid">
-              <VehicleMap vehicles={data.vehicles} />
+              <VehicleMap
+                selectedVehicleId={selectedVehicleId}
+                vehicles={data.vehicles}
+              />
               <InsightPanel insights={data.routeInsights} />
             </section>
-            <VehicleTable vehicles={data.vehicles} />
+            <VehicleTable
+              onSelectVehicle={setSelectedVehicleId}
+              selectedVehicleId={selectedVehicleId}
+              vehicles={data.vehicles}
+            />
           </>
         ) : null}
       </main>

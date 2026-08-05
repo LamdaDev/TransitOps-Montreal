@@ -4,14 +4,22 @@ import { statusClass } from "../utils/status";
 
 interface VehicleTableProps {
   vehicles: Vehicle[];
+  selectedVehicleId: string | null;
+  onSelectVehicle: (vehicleId: string) => void;
 }
 
-export function VehicleTable({ vehicles }: VehicleTableProps) {
+export function VehicleTable({
+  vehicles,
+  selectedVehicleId,
+  onSelectVehicle
+}: VehicleTableProps) {
   return (
     <section className="table-panel" aria-label="Vehicle table">
       <div className="panel-heading">
         <h2>Vehicles</h2>
-        <span>{vehicles.length} tracked</span>
+        <span>
+          {selectedVehicleId ? `Tracking ${selectedVehicleId}` : `${vehicles.length} tracked`}
+        </span>
       </div>
       <div className="table-scroll">
         <table>
@@ -27,21 +35,41 @@ export function VehicleTable({ vehicles }: VehicleTableProps) {
             </tr>
           </thead>
           <tbody>
-            {vehicles.map((vehicle) => (
-              <tr key={vehicle.vehicleId}>
-                <td>{vehicle.vehicleId}</td>
-                <td>{vehicle.routeId}</td>
-                <td>{formatCoordinate(vehicle.latitude)}</td>
-                <td>{formatCoordinate(vehicle.longitude)}</td>
-                <td>{formatSpeed(vehicle.speed)}</td>
-                <td>{formatAge(vehicle.timestamp)}</td>
-                <td>
-                  <span className={`status-pill ${statusClass(vehicle.status)}`}>
-                    {statusLabel(vehicle.status)}
-                  </span>
-                </td>
-              </tr>
-            ))}
+            {vehicles.map((vehicle) => {
+              const isSelected = vehicle.vehicleId === selectedVehicleId;
+
+              return (
+                <tr
+                  className={`vehicle-row${isSelected ? " is-tracked" : ""}`}
+                  key={vehicle.vehicleId}
+                  onClick={() => onSelectVehicle(vehicle.vehicleId)}
+                >
+                  <td>
+                    <button
+                      aria-pressed={isSelected}
+                      className="vehicle-select-button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onSelectVehicle(vehicle.vehicleId);
+                      }}
+                      type="button"
+                    >
+                      {vehicle.vehicleId}
+                    </button>
+                  </td>
+                  <td>{vehicle.routeId}</td>
+                  <td>{formatCoordinate(vehicle.latitude)}</td>
+                  <td>{formatCoordinate(vehicle.longitude)}</td>
+                  <td>{formatSpeed(vehicle.speed)}</td>
+                  <td>{formatAge(vehicle.timestamp)}</td>
+                  <td>
+                    <span className={`status-pill ${statusClass(vehicle.status)}`}>
+                      {statusLabel(vehicle.status)}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
