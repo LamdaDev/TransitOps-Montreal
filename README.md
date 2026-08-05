@@ -25,13 +25,16 @@ I use Montréal transit and noticed most apps focus on passenger arrival times. 
 - Vehicle table with location, speed, last seen time, and computed operational status
 - Operational insight panel for bunching, long gaps, stale telemetry, and healthy route states
 - Go ingestion service that stores vehicle snapshots over time in PostgreSQL
+- Last 30 minutes / last hour route-health timeline with healthy, watch, and degraded intervals
+- Historical bunching and stale-telemetry annotations plus a largest-headway-gap trend
+- Optional 15-second vehicle replay that updates the existing map, vehicle table, metrics, and insights without stopping live refreshes
 - Mock provider designed to be replaced later with an STM GTFS-Realtime provider
 
 ## Architecture
 
 Mock/STM data provider -> Go ingestion service -> PostgreSQL -> GraphQL API -> React dashboard
 
-The backend stores every vehicle snapshot in `vehicle_snapshots` instead of overwriting the latest state. The dashboard currently reads the latest snapshot per vehicle, while the database remains replay-ready for future historical analysis.
+The backend stores every vehicle snapshot in `vehicle_snapshots` instead of overwriting the latest state. For history, it loads a bounded snapshot range plus each vehicle's last pre-window observation, reconstructs an as-of state at each minute, and reuses the live metrics engine. Replay uses the same reconstruction at 15-second intervals. A fresh mock database is backfilled with one hour of deterministic snapshots so the timeline is useful immediately.
 
 ## GraphQL API
 
@@ -80,6 +83,44 @@ mutation {
   }
 }
 ```
+
+Historical operations queries:
+
+```graphql
+query RouteHistory($routeId: String!, $rangeMinutes: Int!) {
+  routeHistory(routeId: $routeId, rangeMinutes: $rangeMinutes) {
+    from
+    to
+    points {
+      timestamp
+      healthStatus
+      activeVehicleCount
+      staleVehicleCount
+      bunchingEventCount
+      largestHeadwayGapMinutes
+    }
+    events {
+      timestamp
+      type
+      description
+    }
+  }
+  routeReplay(routeId: $routeId, rangeMinutes: $rangeMinutes) {
+    stepSeconds
+    frames {
+      timestamp
+      vehicles {
+        vehicleId
+        latitude
+        longitude
+        status
+      }
+    }
+  }
+}
+```
+
+`rangeMinutes` is capped at 60 minutes. Timeline points use one-minute buckets; replay frames use a fixed 15-second step to keep the MVP responsive.
 
 ## How To Run Locally
 
@@ -147,8 +188,7 @@ The app works with `DATA_PROVIDER=mock` and does not require an external API key
 ## Future Improvements
 
 - Real STM GTFS-Realtime integration
-- Replay mode for vehicle snapshots
-- Historical route reliability reports
+- Longer-term route reliability reports and daily rollups
 - Schedule adherence using static GTFS
 - GraphQL subscriptions for live updates
 - Alert acknowledgement workflow

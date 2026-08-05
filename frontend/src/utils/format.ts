@@ -15,6 +15,22 @@ export function formatDateTime(value: string): string {
   }).format(date);
 }
 
+export function formatShortTime(value: string): string {
+  if (!value) {
+    return "No data";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(date);
+}
+
 export function formatAge(value: string): string {
   if (!value) {
     return "No data";

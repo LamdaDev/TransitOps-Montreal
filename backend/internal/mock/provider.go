@@ -17,13 +17,14 @@ type Point struct {
 }
 
 type vehicleSeed struct {
-	VehicleID  string
-	TripID     string
-	Progress   float64
-	Step       float64
-	BaseSpeed  float64
-	Phase      float64
-	StaleEvery int
+	VehicleID          string
+	TripID             string
+	Progress           float64
+	Step               float64
+	BaseSpeed          float64
+	Phase              float64
+	TelemetryGapEvery  int
+	TelemetryGapCycles int
 }
 
 type routeFixture struct {
@@ -51,20 +52,47 @@ func (p *Provider) FetchSnapshots(_ context.Context) ([]models.VehicleSnapshot, 
 	sequence := p.sequence
 	p.mu.Unlock()
 
-	now := time.Now().UTC()
+	return snapshotsForSequence(time.Now().UTC(), sequence), nil
+}
+
+// SeedHistory creates a deterministic mock hour before live polling begins so
+// timeline and replay demos have useful data immediately on a fresh database.
+func (p *Provider) SeedHistory(until time.Time, duration time.Duration, interval time.Duration) []models.VehicleSnapshot {
+	if duration <= 0 || interval <= 0 {
+		return []models.VehicleSnapshot{}
+	}
+
+	steps := int(duration / interval)
+	if steps == 0 {
+		return []models.VehicleSnapshot{}
+	}
+
+	p.mu.Lock()
+	startSequence := p.sequence
+	p.sequence += steps
+	p.mu.Unlock()
+
+	snapshots := make([]models.VehicleSnapshot, 0, steps*18)
+	for step := 1; step <= steps; step++ {
+		timestamp := until.Add(-time.Duration(steps-step+1) * interval)
+		snapshots = append(snapshots, snapshotsForSequence(timestamp, startSequence+step)...)
+	}
+
+	return snapshots
+}
+
+func snapshotsForSequence(now time.Time, sequence int) []models.VehicleSnapshot {
 	snapshots := make([]models.VehicleSnapshot, 0, 24)
 
 	for _, fixture := range fixtures() {
 		for _, vehicle := range fixture.Vehicles {
+			if vehicleHasTelemetryGap(vehicle, sequence) {
+				continue
+			}
+
 			progress := normalizeProgress(vehicle.Progress + float64(sequence)*vehicle.Step)
 			position := interpolate(fixture.Path, progress)
 			speed := math.Max(0, vehicle.BaseSpeed+math.Sin(float64(sequence)*0.7+vehicle.Phase)*2.5)
-			timestamp := now
-
-			if vehicle.StaleEvery > 0 && sequence%vehicle.StaleEvery == 0 {
-				timestamp = now.Add(-4 * time.Minute)
-				speed = 0
-			}
 
 			tripID := vehicle.TripID
 			progressValue := progress
@@ -78,13 +106,22 @@ func (p *Provider) FetchSnapshots(_ context.Context) ([]models.VehicleSnapshot, 
 				Longitude:     round(position.Lon, 6),
 				Speed:         &speedValue,
 				RouteProgress: &progressValue,
-				Timestamp:     timestamp,
+				Timestamp:     now,
 				Source:        sourceName,
 			})
 		}
 	}
 
-	return snapshots, nil
+	return snapshots
+}
+
+func vehicleHasTelemetryGap(vehicle vehicleSeed, sequence int) bool {
+	if vehicle.TelemetryGapEvery <= 0 || vehicle.TelemetryGapCycles <= 0 {
+		return false
+	}
+
+	cycleOffset := (sequence - 1) % vehicle.TelemetryGapEvery
+	return cycleOffset < vehicle.TelemetryGapCycles
 }
 
 func Routes() []models.Route {
@@ -153,7 +190,7 @@ func fixtures() []routeFixture {
 			},
 			Vehicles: []vehicleSeed{
 				{VehicleID: "STM-8001", TripID: "80-N-001", Progress: 0.12, Step: 0.011, BaseSpeed: 22, Phase: 0.2},
-				{VehicleID: "STM-8002", TripID: "80-N-002", Progress: 0.39, Step: 0.010, BaseSpeed: 26, Phase: 1.6, StaleEvery: 3},
+				{VehicleID: "STM-8002", TripID: "80-N-002", Progress: 0.39, Step: 0.010, BaseSpeed: 26, Phase: 1.6, TelemetryGapEvery: 48, TelemetryGapCycles: 18},
 				{VehicleID: "STM-8003", TripID: "80-S-003", Progress: 0.69, Step: 0.009, BaseSpeed: 20, Phase: 2.6},
 			},
 		},

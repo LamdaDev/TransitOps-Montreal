@@ -79,6 +79,9 @@ CREATE INDEX IF NOT EXISTS idx_vehicle_snapshots_route_timestamp
 
 CREATE INDEX IF NOT EXISTS idx_vehicle_snapshots_vehicle_timestamp
 	ON vehicle_snapshots (vehicle_id, timestamp DESC);
+
+CREATE INDEX IF NOT EXISTS idx_vehicle_snapshots_route_vehicle_timestamp
+	ON vehicle_snapshots (route_id, vehicle_id, timestamp DESC, id DESC);
 `)
 	return err
 }
@@ -275,6 +278,84 @@ ORDER BY COALESCE(route_progress, 0), vehicle_id;
 	return snapshots, rows.Err()
 }
 
+// VehicleSnapshotsInRange includes each vehicle's last observation before the
+// requested window so callers can reconstruct an as-of state at its start.
+func (s *Store) VehicleSnapshotsInRange(
+	ctx context.Context,
+	routeID string,
+	from time.Time,
+	to time.Time,
+) ([]models.VehicleSnapshot, error) {
+	rows, err := s.pool.Query(ctx, `
+WITH baseline AS (
+	SELECT DISTINCT ON (vehicle_id)
+		id,
+		vehicle_id,
+		route_id,
+		trip_id,
+		latitude,
+		longitude,
+		speed,
+		route_progress,
+		timestamp,
+		source,
+		created_at
+	FROM vehicle_snapshots
+	WHERE route_id = $1 AND timestamp < $2
+	ORDER BY vehicle_id, timestamp DESC, id DESC
+),
+windowed AS (
+	SELECT
+		id,
+		vehicle_id,
+		route_id,
+		trip_id,
+		latitude,
+		longitude,
+		speed,
+		route_progress,
+		timestamp,
+		source,
+		created_at
+	FROM vehicle_snapshots
+	WHERE route_id = $1 AND timestamp >= $2 AND timestamp <= $3
+)
+SELECT
+	id,
+	vehicle_id,
+	route_id,
+	trip_id,
+	latitude,
+	longitude,
+	speed,
+	route_progress,
+	timestamp,
+	source,
+	created_at
+FROM (
+	SELECT * FROM baseline
+	UNION ALL
+	SELECT * FROM windowed
+) AS snapshots
+ORDER BY timestamp, id;
+`, routeID, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	snapshots := make([]models.VehicleSnapshot, 0)
+	for rows.Next() {
+		snapshot, err := scanVehicleSnapshot(rows)
+		if err != nil {
+			return nil, err
+		}
+		snapshots = append(snapshots, snapshot)
+	}
+
+	return snapshots, rows.Err()
+}
+
 func (s *Store) VehicleTrails(ctx context.Context, routeID string, since time.Time, maxPoints int) ([]models.VehicleTrail, error) {
 	if maxPoints <= 0 {
 		return []models.VehicleTrail{}, nil
@@ -331,6 +412,20 @@ func (s *Store) SnapshotCount(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	return count, nil
+}
+
+func (s *Store) HasSnapshotInRange(ctx context.Context, from time.Time, to time.Time) (bool, error) {
+	var exists bool
+	if err := s.pool.QueryRow(ctx, `
+SELECT EXISTS(
+	SELECT 1
+	FROM vehicle_snapshots
+WHERE timestamp >= $1 AND timestamp <= $2
+);
+`, from, to).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
 }
 
 type rowScanner interface {

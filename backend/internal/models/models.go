@@ -78,6 +78,51 @@ type RouteAnalysis struct {
 	Insights []string     `json:"insights"`
 }
 
+type RouteHistoryPoint struct {
+	Timestamp time.Time    `json:"timestamp"`
+	HasData   bool         `json:"hasData"`
+	Metrics   RouteMetrics `json:"metrics"`
+}
+
+type RouteHealthEventType string
+
+const (
+	RouteHealthEventBunching       RouteHealthEventType = "BUNCHING_RISK"
+	RouteHealthEventStaleTelemetry RouteHealthEventType = "STALE_TELEMETRY"
+)
+
+type RouteHealthEvent struct {
+	Timestamp   time.Time            `json:"timestamp"`
+	Type        RouteHealthEventType `json:"type"`
+	Description string               `json:"description"`
+	Count       int                  `json:"count"`
+}
+
+type RouteHistory struct {
+	RouteID       string              `json:"routeId"`
+	From          time.Time           `json:"from"`
+	To            time.Time           `json:"to"`
+	BucketSeconds int                 `json:"bucketSeconds"`
+	Points        []RouteHistoryPoint `json:"points"`
+	Events        []RouteHealthEvent  `json:"events"`
+}
+
+type ReplayFrame struct {
+	Timestamp time.Time    `json:"timestamp"`
+	HasData   bool         `json:"hasData"`
+	Vehicles  []Vehicle    `json:"vehicles"`
+	Metrics   RouteMetrics `json:"metrics"`
+	Insights  []string     `json:"insights"`
+}
+
+type RouteReplay struct {
+	RouteID     string        `json:"routeId"`
+	From        time.Time     `json:"from"`
+	To          time.Time     `json:"to"`
+	StepSeconds int           `json:"stepSeconds"`
+	Frames      []ReplayFrame `json:"frames"`
+}
+
 type IngestResult struct {
 	InsertedCount int       `json:"insertedCount"`
 	Timestamp     time.Time `json:"timestamp"`

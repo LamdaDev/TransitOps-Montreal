@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/lamda/transitops-montreal/backend/internal/api"
 	"github.com/lamda/transitops-montreal/backend/internal/config"
@@ -45,6 +46,28 @@ func main() {
 	if err != nil {
 		log.Fatalf("snapshot count failed: %v", err)
 	}
+	now := time.Now().UTC()
+	hasHistory, err := store.HasSnapshotInRange(
+		ctx,
+		now.Add(-time.Hour),
+		now.Add(-55*time.Minute),
+	)
+	if err != nil {
+		log.Fatalf("historical snapshot check failed: %v", err)
+	}
+	if !hasHistory {
+		historyInterval := cfg.IngestInterval
+		if historyInterval < 10*time.Second {
+			historyInterval = 10 * time.Second
+		}
+
+		historicalSnapshots := provider.SeedHistory(now, time.Hour, historyInterval)
+		if err := store.InsertVehicleSnapshots(ctx, historicalSnapshots); err != nil {
+			log.Fatalf("historical mock seed failed: %v", err)
+		}
+		log.Printf("seeded %d historical mock snapshots", len(historicalSnapshots))
+	}
+
 	if count == 0 {
 		result, err := ingestService.RunOnce(ctx)
 		if err != nil {

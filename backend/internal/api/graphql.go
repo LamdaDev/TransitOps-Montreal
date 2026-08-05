@@ -9,20 +9,26 @@ import (
 	"github.com/graphql-go/graphql"
 	"github.com/graphql-go/handler"
 
+	"github.com/lamda/transitops-montreal/backend/internal/history"
 	"github.com/lamda/transitops-montreal/backend/internal/ingest"
 	"github.com/lamda/transitops-montreal/backend/internal/metrics"
 	"github.com/lamda/transitops-montreal/backend/internal/models"
 )
 
 const (
-	defaultTrailWindowMinutes = 10
-	maxTrailWindowMinutes     = 60
-	maxTrailPointsPerVehicle  = 60
+	defaultTrailWindowMinutes  = 10
+	maxTrailWindowMinutes      = 60
+	maxTrailPointsPerVehicle   = 60
+	defaultHistoryRangeMinutes = 30
+	maxHistoryRangeMinutes     = 60
+	historyBucket              = time.Minute
+	replayFrameStep            = 15 * time.Second
 )
 
 type RouteStore interface {
 	Routes(ctx context.Context) ([]models.Route, error)
 	LatestVehicleSnapshots(ctx context.Context, routeID string) ([]models.VehicleSnapshot, error)
+	VehicleSnapshotsInRange(ctx context.Context, routeID string, from time.Time, to time.Time) ([]models.VehicleSnapshot, error)
 	VehicleTrails(ctx context.Context, routeID string, since time.Time, maxPoints int) ([]models.VehicleTrail, error)
 }
 
@@ -140,6 +146,80 @@ func (s *GraphQLServer) schema() (graphql.Schema, error) {
 		},
 	})
 
+	routeHistoryPointType := graphql.NewObject(graphql.ObjectConfig{
+		Name: "RouteHistoryPoint",
+		Fields: graphql.Fields{
+			"timestamp":                &graphql.Field{Type: graphql.NewNonNull(graphql.String)},
+			"hasData":                  &graphql.Field{Type: graphql.NewNonNull(graphql.Boolean)},
+			"activeVehicleCount":       &graphql.Field{Type: graphql.NewNonNull(graphql.Int)},
+			"staleVehicleCount":        &graphql.Field{Type: graphql.NewNonNull(graphql.Int)},
+			"bunchingEventCount":       &graphql.Field{Type: graphql.NewNonNull(graphql.Int)},
+			"largestHeadwayGapMinutes": &graphql.Field{Type: graphql.NewNonNull(graphql.Float)},
+			"averageSpacingMinutes":    &graphql.Field{Type: graphql.NewNonNull(graphql.Float)},
+			"healthStatus":             &graphql.Field{Type: graphql.NewNonNull(healthStatusType)},
+		},
+	})
+
+	routeHealthEventKindType := graphql.NewEnum(graphql.EnumConfig{
+		Name: "RouteHealthEventKind",
+		Values: graphql.EnumValueConfigMap{
+			"BUNCHING_RISK":   &graphql.EnumValueConfig{Value: string(models.RouteHealthEventBunching)},
+			"STALE_TELEMETRY": &graphql.EnumValueConfig{Value: string(models.RouteHealthEventStaleTelemetry)},
+		},
+	})
+
+	routeHealthEventType := graphql.NewObject(graphql.ObjectConfig{
+		Name: "RouteHealthEvent",
+		Fields: graphql.Fields{
+			"timestamp":   &graphql.Field{Type: graphql.NewNonNull(graphql.String)},
+			"type":        &graphql.Field{Type: graphql.NewNonNull(routeHealthEventKindType)},
+			"description": &graphql.Field{Type: graphql.NewNonNull(graphql.String)},
+			"count":       &graphql.Field{Type: graphql.NewNonNull(graphql.Int)},
+		},
+	})
+
+	routeHistoryType := graphql.NewObject(graphql.ObjectConfig{
+		Name: "RouteHistory",
+		Fields: graphql.Fields{
+			"routeId":       &graphql.Field{Type: graphql.NewNonNull(graphql.String)},
+			"from":          &graphql.Field{Type: graphql.NewNonNull(graphql.String)},
+			"to":            &graphql.Field{Type: graphql.NewNonNull(graphql.String)},
+			"bucketSeconds": &graphql.Field{Type: graphql.NewNonNull(graphql.Int)},
+			"points": &graphql.Field{Type: graphql.NewNonNull(
+				graphql.NewList(graphql.NewNonNull(routeHistoryPointType)),
+			)},
+			"events": &graphql.Field{Type: graphql.NewNonNull(
+				graphql.NewList(graphql.NewNonNull(routeHealthEventType)),
+			)},
+		},
+	})
+
+	replayFrameType := graphql.NewObject(graphql.ObjectConfig{
+		Name: "ReplayFrame",
+		Fields: graphql.Fields{
+			"timestamp": &graphql.Field{Type: graphql.NewNonNull(graphql.String)},
+			"hasData":   &graphql.Field{Type: graphql.NewNonNull(graphql.Boolean)},
+			"vehicles": &graphql.Field{Type: graphql.NewNonNull(
+				graphql.NewList(graphql.NewNonNull(vehicleType)),
+			)},
+			"metrics":  &graphql.Field{Type: graphql.NewNonNull(metricsType)},
+			"insights": &graphql.Field{Type: graphql.NewNonNull(graphql.NewList(graphql.NewNonNull(graphql.String)))},
+		},
+	})
+
+	routeReplayType := graphql.NewObject(graphql.ObjectConfig{
+		Name: "RouteReplay",
+		Fields: graphql.Fields{
+			"routeId":     &graphql.Field{Type: graphql.NewNonNull(graphql.String)},
+			"from":        &graphql.Field{Type: graphql.NewNonNull(graphql.String)},
+			"to":          &graphql.Field{Type: graphql.NewNonNull(graphql.String)},
+			"stepSeconds": &graphql.Field{Type: graphql.NewNonNull(graphql.Int)},
+			"frames": &graphql.Field{Type: graphql.NewNonNull(
+				graphql.NewList(graphql.NewNonNull(replayFrameType)),
+			)},
+		},
+	})
+
 	ingestResultType := graphql.NewObject(graphql.ObjectConfig{
 		Name: "IngestResult",
 		Fields: graphql.Fields{
@@ -225,6 +305,38 @@ func (s *GraphQLServer) schema() (graphql.Schema, error) {
 					return formatVehicleTrails(trails), nil
 				},
 			},
+			"routeHistory": &graphql.Field{
+				Type: graphql.NewNonNull(routeHistoryType),
+				Args: graphql.FieldConfigArgument{
+					"routeId":      &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)},
+					"rangeMinutes": &graphql.ArgumentConfig{Type: graphql.Int},
+				},
+				Resolve: func(params graphql.ResolveParams) (any, error) {
+					routeID, _ := params.Args["routeId"].(string)
+					rangeMinutes := historyRangeMinutes(params.Args)
+					routeHistory, err := s.routeHistory(params.Context, routeID, rangeMinutes)
+					if err != nil {
+						return nil, err
+					}
+					return formatRouteHistory(routeHistory), nil
+				},
+			},
+			"routeReplay": &graphql.Field{
+				Type: graphql.NewNonNull(routeReplayType),
+				Args: graphql.FieldConfigArgument{
+					"routeId":      &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)},
+					"rangeMinutes": &graphql.ArgumentConfig{Type: graphql.Int},
+				},
+				Resolve: func(params graphql.ResolveParams) (any, error) {
+					routeID, _ := params.Args["routeId"].(string)
+					rangeMinutes := historyRangeMinutes(params.Args)
+					replay, err := s.routeReplay(params.Context, routeID, rangeMinutes)
+					if err != nil {
+						return nil, err
+					}
+					return formatRouteReplay(replay), nil
+				},
+			},
 		},
 	})
 
@@ -256,6 +368,36 @@ func (s *GraphQLServer) analyzeRoute(ctx context.Context, routeID string) (model
 		return models.RouteAnalysis{}, fmt.Errorf("load latest vehicles for route %s: %w", routeID, err)
 	}
 	return metrics.Analyze(routeID, snapshots, time.Now().UTC()), nil
+}
+
+func (s *GraphQLServer) routeHistory(
+	ctx context.Context,
+	routeID string,
+	rangeMinutes int,
+) (models.RouteHistory, error) {
+	to := time.Now().UTC().Truncate(historyBucket)
+	from := to.Add(-time.Duration(rangeMinutes) * time.Minute)
+	snapshots, err := s.store.VehicleSnapshotsInRange(ctx, routeID, from, to)
+	if err != nil {
+		return models.RouteHistory{}, fmt.Errorf("load historical snapshots for route %s: %w", routeID, err)
+	}
+
+	return history.BuildRouteHistory(routeID, snapshots, from, to, historyBucket), nil
+}
+
+func (s *GraphQLServer) routeReplay(
+	ctx context.Context,
+	routeID string,
+	rangeMinutes int,
+) (models.RouteReplay, error) {
+	to := time.Now().UTC().Truncate(replayFrameStep)
+	from := to.Add(-time.Duration(rangeMinutes) * time.Minute)
+	snapshots, err := s.store.VehicleSnapshotsInRange(ctx, routeID, from, to)
+	if err != nil {
+		return models.RouteReplay{}, fmt.Errorf("load replay snapshots for route %s: %w", routeID, err)
+	}
+
+	return history.BuildRouteReplay(routeID, snapshots, from, to, replayFrameStep), nil
 }
 
 func formatRoutes(routes []models.Route) []map[string]any {
@@ -337,6 +479,62 @@ func formatRouteMetrics(routeMetrics models.RouteMetrics) map[string]any {
 	}
 }
 
+func formatRouteHistory(routeHistory models.RouteHistory) map[string]any {
+	points := make([]map[string]any, 0, len(routeHistory.Points))
+	for _, point := range routeHistory.Points {
+		points = append(points, map[string]any{
+			"timestamp":                formatTime(point.Timestamp),
+			"hasData":                  point.HasData,
+			"activeVehicleCount":       point.Metrics.ActiveVehicleCount,
+			"staleVehicleCount":        point.Metrics.StaleVehicleCount,
+			"bunchingEventCount":       point.Metrics.BunchingEventCount,
+			"largestHeadwayGapMinutes": point.Metrics.LargestHeadwayGapMinutes,
+			"averageSpacingMinutes":    point.Metrics.AverageSpacingMinutes,
+			"healthStatus":             point.Metrics.HealthStatus,
+		})
+	}
+
+	events := make([]map[string]any, 0, len(routeHistory.Events))
+	for _, event := range routeHistory.Events {
+		events = append(events, map[string]any{
+			"timestamp":   formatTime(event.Timestamp),
+			"type":        string(event.Type),
+			"description": event.Description,
+			"count":       event.Count,
+		})
+	}
+
+	return map[string]any{
+		"routeId":       routeHistory.RouteID,
+		"from":          formatTime(routeHistory.From),
+		"to":            formatTime(routeHistory.To),
+		"bucketSeconds": routeHistory.BucketSeconds,
+		"points":        points,
+		"events":        events,
+	}
+}
+
+func formatRouteReplay(replay models.RouteReplay) map[string]any {
+	frames := make([]map[string]any, 0, len(replay.Frames))
+	for _, frame := range replay.Frames {
+		frames = append(frames, map[string]any{
+			"timestamp": formatTime(frame.Timestamp),
+			"hasData":   frame.HasData,
+			"vehicles":  formatVehicles(frame.Vehicles),
+			"metrics":   formatRouteMetrics(frame.Metrics),
+			"insights":  frame.Insights,
+		})
+	}
+
+	return map[string]any{
+		"routeId":     replay.RouteID,
+		"from":        formatTime(replay.From),
+		"to":          formatTime(replay.To),
+		"stepSeconds": replay.StepSeconds,
+		"frames":      frames,
+	}
+}
+
 func formatIngestResult(result models.IngestResult) map[string]any {
 	return map[string]any{
 		"insertedCount": result.InsertedCount,
@@ -373,6 +571,17 @@ func trailWindowMinutes(args map[string]any) int {
 	}
 	if minutes > maxTrailWindowMinutes {
 		return maxTrailWindowMinutes
+	}
+	return minutes
+}
+
+func historyRangeMinutes(args map[string]any) int {
+	minutes, ok := args["rangeMinutes"].(int)
+	if !ok || minutes <= 0 {
+		return defaultHistoryRangeMinutes
+	}
+	if minutes > maxHistoryRangeMinutes {
+		return maxHistoryRangeMinutes
 	}
 	return minutes
 }

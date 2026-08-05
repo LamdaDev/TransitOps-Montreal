@@ -1,14 +1,22 @@
 import type { Vehicle } from "../types/transit";
-import { formatAge, formatCoordinate, formatSpeed, statusLabel } from "../utils/format";
+import {
+  formatAge,
+  formatCoordinate,
+  formatDateTime,
+  formatSpeed,
+  statusLabel
+} from "../utils/format";
 import { statusClass } from "../utils/status";
 
 interface VehicleTableProps {
+  historical?: boolean;
   vehicles: Vehicle[];
   selectedVehicleId: string | null;
   onSelectVehicle: (vehicleId: string) => void;
 }
 
 export function VehicleTable({
+  historical = false,
   vehicles,
   selectedVehicleId,
   onSelectVehicle
@@ -16,7 +24,7 @@ export function VehicleTable({
   return (
     <section className="table-panel" aria-label="Vehicle table">
       <div className="panel-heading">
-        <h2>Vehicles</h2>
+        <h2>{historical ? "Historical vehicles" : "Vehicles"}</h2>
         <span>
           {selectedVehicleId ? `Tracking ${selectedVehicleId}` : `${vehicles.length} tracked`}
         </span>
@@ -30,7 +38,7 @@ export function VehicleTable({
               <th>Latitude</th>
               <th>Longitude</th>
               <th>Speed</th>
-              <th>Last seen</th>
+              <th>{historical ? "Observed at" : "Last seen"}</th>
               <th>Status</th>
             </tr>
           </thead>
@@ -61,7 +69,7 @@ export function VehicleTable({
                   <td>{formatCoordinate(vehicle.latitude)}</td>
                   <td>{formatCoordinate(vehicle.longitude)}</td>
                   <td>{formatSpeed(vehicle.speed)}</td>
-                  <td>{formatAge(vehicle.timestamp)}</td>
+                  <td>{historical ? formatDateTime(vehicle.timestamp) : formatAge(vehicle.timestamp)}</td>
                   <td>
                     <span className={`status-pill ${statusClass(vehicle.status)}`}>
                       {statusLabel(vehicle.status)}
