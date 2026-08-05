@@ -93,7 +93,11 @@ export function Dashboard({ theme, onThemeChange }: DashboardProps) {
       <main>
         <section className="toolbar" aria-label="Dashboard controls">
           <RouteSelector
-            routes={data?.routes ?? [{ id: defaultRoute, shortName: "24", longName: "Sherbrooke" }]}
+            routes={
+              data?.routes ?? [
+                { id: defaultRoute, shortName: "24", longName: "Sherbrooke", shape: [] }
+              ]
+            }
             selectedRoute={selectedRoute}
             onSelectRoute={handleRouteSelect}
           />
@@ -125,7 +129,10 @@ export function Dashboard({ theme, onThemeChange }: DashboardProps) {
             <SummaryCards metrics={data.routeMetrics} />
             <section className="dashboard-grid">
               <VehicleMap
+                routeColor={selectedRouteDetails?.color}
+                routeShape={selectedRouteDetails?.shape ?? []}
                 selectedVehicleId={selectedVehicleId}
+                vehicleTrails={data.vehicleTrails}
                 vehicles={data.vehicles}
               />
               <InsightPanel insights={data.routeInsights} />

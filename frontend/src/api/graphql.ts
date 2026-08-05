@@ -44,6 +44,10 @@ export async function fetchDashboard(routeId: string): Promise<DashboardData> {
           shortName
           longName
           color
+          shape {
+            latitude
+            longitude
+          }
         }
         vehicles(routeId: $routeId) {
           id
@@ -70,6 +74,14 @@ export async function fetchDashboard(routeId: string): Promise<DashboardData> {
           lastUpdated
         }
         routeInsights(routeId: $routeId)
+        vehicleTrails(routeId: $routeId, minutes: 10) {
+          vehicleId
+          points {
+            latitude
+            longitude
+            timestamp
+          }
+        }
       }
     `,
     { routeId }

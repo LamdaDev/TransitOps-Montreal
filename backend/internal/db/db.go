@@ -52,6 +52,14 @@ CREATE TABLE IF NOT EXISTS routes (
 	color TEXT
 );
 
+CREATE TABLE IF NOT EXISTS route_shape_points (
+	route_id TEXT NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
+	point_index INTEGER NOT NULL,
+	latitude DOUBLE PRECISION NOT NULL,
+	longitude DOUBLE PRECISION NOT NULL,
+	PRIMARY KEY (route_id, point_index)
+);
+
 CREATE TABLE IF NOT EXISTS vehicle_snapshots (
 	id BIGSERIAL PRIMARY KEY,
 	vehicle_id TEXT NOT NULL,
@@ -77,6 +85,7 @@ CREATE INDEX IF NOT EXISTS idx_vehicle_snapshots_vehicle_timestamp
 
 func (s *Store) UpsertRoutes(ctx context.Context, routes []models.Route) error {
 	batch := &pgx.Batch{}
+	statementCount := 0
 	for _, route := range routes {
 		batch.Queue(`
 INSERT INTO routes (id, short_name, long_name, color)
@@ -86,12 +95,26 @@ ON CONFLICT (id) DO UPDATE SET
 	long_name = EXCLUDED.long_name,
 	color = EXCLUDED.color;
 `, route.ID, route.ShortName, route.LongName, route.Color)
+		statementCount++
+	}
+
+	for _, route := range routes {
+		batch.Queue(`DELETE FROM route_shape_points WHERE route_id = $1;`, route.ID)
+		statementCount++
+
+		for pointIndex, point := range route.Shape {
+			batch.Queue(`
+INSERT INTO route_shape_points (route_id, point_index, latitude, longitude)
+VALUES ($1, $2, $3, $4);
+`, route.ID, pointIndex, point.Latitude, point.Longitude)
+			statementCount++
+		}
 	}
 
 	results := s.pool.SendBatch(ctx, batch)
 	defer results.Close()
 
-	for range routes {
+	for statementIndex := 0; statementIndex < statementCount; statementIndex++ {
 		if _, err := results.Exec(); err != nil {
 			return err
 		}
@@ -133,7 +156,38 @@ END, id;
 		routes = append(routes, route)
 	}
 
-	return routes, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	shapeRows, err := s.pool.Query(ctx, `
+SELECT route_id, latitude, longitude
+FROM route_shape_points
+ORDER BY route_id, point_index;
+`)
+	if err != nil {
+		return nil, err
+	}
+	defer shapeRows.Close()
+
+	shapesByRouteID := make(map[string][]models.RouteShapePoint)
+	for shapeRows.Next() {
+		var routeID string
+		var point models.RouteShapePoint
+		if err := shapeRows.Scan(&routeID, &point.Latitude, &point.Longitude); err != nil {
+			return nil, err
+		}
+		shapesByRouteID[routeID] = append(shapesByRouteID[routeID], point)
+	}
+	if err := shapeRows.Err(); err != nil {
+		return nil, err
+	}
+
+	for index := range routes {
+		routes[index].Shape = shapesByRouteID[routes[index].ID]
+	}
+
+	return routes, nil
 }
 
 func (s *Store) InsertVehicleSnapshots(ctx context.Context, snapshots []models.VehicleSnapshot) error {
@@ -219,6 +273,56 @@ ORDER BY COALESCE(route_progress, 0), vehicle_id;
 	}
 
 	return snapshots, rows.Err()
+}
+
+func (s *Store) VehicleTrails(ctx context.Context, routeID string, since time.Time, maxPoints int) ([]models.VehicleTrail, error) {
+	if maxPoints <= 0 {
+		return []models.VehicleTrail{}, nil
+	}
+
+	rows, err := s.pool.Query(ctx, `
+WITH recent AS (
+	SELECT
+		vehicle_id,
+		latitude,
+		longitude,
+		timestamp,
+		ROW_NUMBER() OVER (
+			PARTITION BY vehicle_id
+			ORDER BY timestamp DESC, id DESC
+		) AS snapshot_rank
+	FROM vehicle_snapshots
+	WHERE route_id = $1 AND timestamp >= $2
+)
+SELECT vehicle_id, latitude, longitude, timestamp
+FROM recent
+WHERE snapshot_rank <= $3
+ORDER BY vehicle_id, timestamp, snapshot_rank DESC;
+`, routeID, since, maxPoints)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	trails := make([]models.VehicleTrail, 0)
+	currentVehicleID := ""
+	for rows.Next() {
+		var vehicleID string
+		var point models.VehicleTrailPoint
+		if err := rows.Scan(&vehicleID, &point.Latitude, &point.Longitude, &point.Timestamp); err != nil {
+			return nil, err
+		}
+
+		if vehicleID != currentVehicleID {
+			trails = append(trails, models.VehicleTrail{VehicleID: vehicleID})
+			currentVehicleID = vehicleID
+		}
+
+		trailIndex := len(trails) - 1
+		trails[trailIndex].Points = append(trails[trailIndex].Points, point)
+	}
+
+	return trails, rows.Err()
 }
 
 func (s *Store) SnapshotCount(ctx context.Context) (int64, error) {

@@ -14,9 +14,16 @@ import (
 	"github.com/lamda/transitops-montreal/backend/internal/models"
 )
 
+const (
+	defaultTrailWindowMinutes = 10
+	maxTrailWindowMinutes     = 60
+	maxTrailPointsPerVehicle  = 60
+)
+
 type RouteStore interface {
 	Routes(ctx context.Context) ([]models.Route, error)
 	LatestVehicleSnapshots(ctx context.Context, routeID string) ([]models.VehicleSnapshot, error)
+	VehicleTrails(ctx context.Context, routeID string, since time.Time, maxPoints int) ([]models.VehicleTrail, error)
 }
 
 type GraphQLServer struct {
@@ -44,11 +51,11 @@ func (s *GraphQLServer) schema() (graphql.Schema, error) {
 	vehicleStatusType := graphql.NewEnum(graphql.EnumConfig{
 		Name: "VehicleStatus",
 		Values: graphql.EnumValueConfigMap{
-			"ACTIVE":         &graphql.EnumValueConfig{Value: string(models.VehicleStatusActive)},
-			"STALE":          &graphql.EnumValueConfig{Value: string(models.VehicleStatusStale)},
-			"BUNCHING_RISK":  &graphql.EnumValueConfig{Value: string(models.VehicleStatusBunchingRisk)},
-			"DELAYED":        &graphql.EnumValueConfig{Value: string(models.VehicleStatusDelayed)},
-			"UNKNOWN":        &graphql.EnumValueConfig{Value: string(models.VehicleStatusUnknown)},
+			"ACTIVE":        &graphql.EnumValueConfig{Value: string(models.VehicleStatusActive)},
+			"STALE":         &graphql.EnumValueConfig{Value: string(models.VehicleStatusStale)},
+			"BUNCHING_RISK": &graphql.EnumValueConfig{Value: string(models.VehicleStatusBunchingRisk)},
+			"DELAYED":       &graphql.EnumValueConfig{Value: string(models.VehicleStatusDelayed)},
+			"UNKNOWN":       &graphql.EnumValueConfig{Value: string(models.VehicleStatusUnknown)},
 		},
 	})
 
@@ -61,6 +68,23 @@ func (s *GraphQLServer) schema() (graphql.Schema, error) {
 		},
 	})
 
+	routeShapePointType := graphql.NewObject(graphql.ObjectConfig{
+		Name: "RouteShapePoint",
+		Fields: graphql.Fields{
+			"latitude":  &graphql.Field{Type: graphql.NewNonNull(graphql.Float)},
+			"longitude": &graphql.Field{Type: graphql.NewNonNull(graphql.Float)},
+		},
+	})
+
+	vehicleTrailPointType := graphql.NewObject(graphql.ObjectConfig{
+		Name: "VehicleTrailPoint",
+		Fields: graphql.Fields{
+			"latitude":  &graphql.Field{Type: graphql.NewNonNull(graphql.Float)},
+			"longitude": &graphql.Field{Type: graphql.NewNonNull(graphql.Float)},
+			"timestamp": &graphql.Field{Type: graphql.NewNonNull(graphql.String)},
+		},
+	})
+
 	routeType := graphql.NewObject(graphql.ObjectConfig{
 		Name: "Route",
 		Fields: graphql.Fields{
@@ -68,6 +92,9 @@ func (s *GraphQLServer) schema() (graphql.Schema, error) {
 			"shortName": &graphql.Field{Type: graphql.NewNonNull(graphql.String)},
 			"longName":  &graphql.Field{Type: graphql.NewNonNull(graphql.String)},
 			"color":     &graphql.Field{Type: graphql.String},
+			"shape": &graphql.Field{Type: graphql.NewNonNull(
+				graphql.NewList(graphql.NewNonNull(routeShapePointType)),
+			)},
 		},
 	})
 
@@ -89,10 +116,20 @@ func (s *GraphQLServer) schema() (graphql.Schema, error) {
 		},
 	})
 
+	vehicleTrailType := graphql.NewObject(graphql.ObjectConfig{
+		Name: "VehicleTrail",
+		Fields: graphql.Fields{
+			"vehicleId": &graphql.Field{Type: graphql.NewNonNull(graphql.String)},
+			"points": &graphql.Field{Type: graphql.NewNonNull(
+				graphql.NewList(graphql.NewNonNull(vehicleTrailPointType)),
+			)},
+		},
+	})
+
 	metricsType := graphql.NewObject(graphql.ObjectConfig{
 		Name: "RouteMetrics",
 		Fields: graphql.Fields{
-			"routeId":                   &graphql.Field{Type: graphql.NewNonNull(graphql.String)},
+			"routeId":                  &graphql.Field{Type: graphql.NewNonNull(graphql.String)},
 			"activeVehicleCount":       &graphql.Field{Type: graphql.NewNonNull(graphql.Int)},
 			"staleVehicleCount":        &graphql.Field{Type: graphql.NewNonNull(graphql.Int)},
 			"bunchingEventCount":       &graphql.Field{Type: graphql.NewNonNull(graphql.Int)},
@@ -167,6 +204,27 @@ func (s *GraphQLServer) schema() (graphql.Schema, error) {
 					return analysis.Insights, nil
 				},
 			},
+			"vehicleTrails": &graphql.Field{
+				Type: graphql.NewNonNull(graphql.NewList(graphql.NewNonNull(vehicleTrailType))),
+				Args: graphql.FieldConfigArgument{
+					"routeId": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)},
+					"minutes": &graphql.ArgumentConfig{Type: graphql.Int},
+				},
+				Resolve: func(params graphql.ResolveParams) (any, error) {
+					routeID, _ := params.Args["routeId"].(string)
+					minutes := trailWindowMinutes(params.Args)
+					trails, err := s.store.VehicleTrails(
+						params.Context,
+						routeID,
+						time.Now().UTC().Add(-time.Duration(minutes)*time.Minute),
+						maxTrailPointsPerVehicle,
+					)
+					if err != nil {
+						return nil, fmt.Errorf("load vehicle trails for route %s: %w", routeID, err)
+					}
+					return formatVehicleTrails(trails), nil
+				},
+			},
 		},
 	})
 
@@ -208,6 +266,18 @@ func formatRoutes(routes []models.Route) []map[string]any {
 			"shortName": route.ShortName,
 			"longName":  route.LongName,
 			"color":     stringPtrValue(route.Color),
+			"shape":     formatRouteShape(route.Shape),
+		})
+	}
+	return formatted
+}
+
+func formatRouteShape(points []models.RouteShapePoint) []map[string]any {
+	formatted := make([]map[string]any, 0, len(points))
+	for _, point := range points {
+		formatted = append(formatted, map[string]any{
+			"latitude":  point.Latitude,
+			"longitude": point.Longitude,
 		})
 	}
 	return formatted
@@ -234,9 +304,29 @@ func formatVehicles(vehicles []models.Vehicle) []map[string]any {
 	return formatted
 }
 
+func formatVehicleTrails(trails []models.VehicleTrail) []map[string]any {
+	formatted := make([]map[string]any, 0, len(trails))
+	for _, trail := range trails {
+		points := make([]map[string]any, 0, len(trail.Points))
+		for _, point := range trail.Points {
+			points = append(points, map[string]any{
+				"latitude":  point.Latitude,
+				"longitude": point.Longitude,
+				"timestamp": formatTime(point.Timestamp),
+			})
+		}
+
+		formatted = append(formatted, map[string]any{
+			"vehicleId": trail.VehicleID,
+			"points":    points,
+		})
+	}
+	return formatted
+}
+
 func formatRouteMetrics(routeMetrics models.RouteMetrics) map[string]any {
 	return map[string]any{
-		"routeId":                   routeMetrics.RouteID,
+		"routeId":                  routeMetrics.RouteID,
 		"activeVehicleCount":       routeMetrics.ActiveVehicleCount,
 		"staleVehicleCount":        routeMetrics.StaleVehicleCount,
 		"bunchingEventCount":       routeMetrics.BunchingEventCount,
@@ -274,6 +364,17 @@ func floatPtrValue(value *float64) any {
 		return nil
 	}
 	return *value
+}
+
+func trailWindowMinutes(args map[string]any) int {
+	minutes, ok := args["minutes"].(int)
+	if !ok || minutes <= 0 {
+		return defaultTrailWindowMinutes
+	}
+	if minutes > maxTrailWindowMinutes {
+		return maxTrailWindowMinutes
+	}
+	return minutes
 }
 
 func withCORS(next http.Handler) http.Handler {

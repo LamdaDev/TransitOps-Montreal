@@ -10,6 +10,12 @@ export interface Route {
   shortName: string;
   longName: string;
   color?: string | null;
+  shape: RouteShapePoint[];
+}
+
+export interface RouteShapePoint {
+  latitude: number;
+  longitude: number;
 }
 
 export interface Vehicle {
@@ -38,9 +44,21 @@ export interface RouteMetrics {
   lastUpdated: string;
 }
 
+export interface VehicleTrailPoint {
+  latitude: number;
+  longitude: number;
+  timestamp: string;
+}
+
+export interface VehicleTrail {
+  vehicleId: string;
+  points: VehicleTrailPoint[];
+}
+
 export interface DashboardData {
   routes: Route[];
   vehicles: Vehicle[];
+  vehicleTrails: VehicleTrail[];
   routeMetrics: RouteMetrics;
   routeInsights: string[];
 }

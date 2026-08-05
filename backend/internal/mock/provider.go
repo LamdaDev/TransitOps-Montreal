@@ -91,7 +91,16 @@ func Routes() []models.Route {
 	fixtures := fixtures()
 	routes := make([]models.Route, 0, len(fixtures))
 	for _, fixture := range fixtures {
-		routes = append(routes, fixture.Route)
+		route := fixture.Route
+		route.Shape = make([]models.RouteShapePoint, 0, len(fixture.Path))
+		for _, point := range fixture.Path {
+			route.Shape = append(route.Shape, models.RouteShapePoint{
+				Latitude:  point.Lat,
+				Longitude: point.Lon,
+			})
+		}
+
+		routes = append(routes, route)
 	}
 	return routes
 }
