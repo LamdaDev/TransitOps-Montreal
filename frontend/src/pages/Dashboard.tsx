@@ -7,12 +7,18 @@ import { RouteSelector } from "../components/RouteSelector";
 import { SummaryCards } from "../components/SummaryCards";
 import { VehicleMap } from "../components/VehicleMap";
 import { VehicleTable } from "../components/VehicleTable";
+import type { Theme } from "../types/theme";
 import type { DashboardData } from "../types/transit";
 import { formatDateTime } from "../utils/format";
 
 const defaultRoute = "24";
 
-export function Dashboard() {
+interface DashboardProps {
+  theme: Theme;
+  onThemeChange: (theme: Theme) => void;
+}
+
+export function Dashboard({ theme, onThemeChange }: DashboardProps) {
   const [selectedRoute, setSelectedRoute] = useState(defaultRoute);
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -74,6 +80,8 @@ export function Dashboard() {
             ? formatDateTime(data.routeMetrics.lastUpdated)
             : undefined
         }
+        onThemeChange={onThemeChange}
+        theme={theme}
       />
 
       <main>
