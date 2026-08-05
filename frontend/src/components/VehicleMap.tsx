@@ -1,10 +1,20 @@
 import { useEffect } from "react";
 import { CircleMarker, MapContainer, Polyline, Popup, TileLayer, useMap } from "react-leaflet";
-import type { RouteShapePoint, Vehicle, VehicleTrail, VehicleTrailPoint } from "../types/transit";
-import { formatAge, formatSpeed, statusLabel } from "../utils/format";
+import type {
+  ReplayFrame,
+  RouteShapePoint,
+  Vehicle,
+  VehicleTrail,
+  VehicleTrailPoint
+} from "../types/transit";
+import { formatAge, formatDateTime, formatSpeed, statusLabel } from "../utils/format";
 import { statusColor } from "../utils/status";
 
 interface VehicleMapProps {
+  isReplayMode: boolean;
+  replayFrameIndex: number;
+  replayFrames: ReplayFrame[];
+  replayTimestamp?: string;
   vehicles: Vehicle[];
   selectedVehicleId: string | null;
   routeShape: RouteShapePoint[];
@@ -70,7 +80,45 @@ function splitTrail(points: VehicleTrailPoint[]): MapPosition[][] {
   return segments;
 }
 
+function buildReplayTrails(frames: ReplayFrame[], frameIndex: number): VehicleTrail[] {
+  const trailsByVehicleID = new Map<string, VehicleTrail>();
+  const lastFrameIndex = Math.min(frameIndex, frames.length - 1);
+
+  for (let index = 0; index <= lastFrameIndex; index += 1) {
+    const frame = frames[index];
+    if (!frame?.hasData) {
+      continue;
+    }
+
+    for (const vehicle of frame.vehicles) {
+      const trail = trailsByVehicleID.get(vehicle.vehicleId) ?? {
+        vehicleId: vehicle.vehicleId,
+        points: []
+      };
+      const lastPoint = trail.points[trail.points.length - 1];
+      if (
+        !lastPoint ||
+        lastPoint.latitude !== vehicle.latitude ||
+        lastPoint.longitude !== vehicle.longitude
+      ) {
+        trail.points.push({
+          latitude: vehicle.latitude,
+          longitude: vehicle.longitude,
+          timestamp: frame.timestamp
+        });
+      }
+      trailsByVehicleID.set(vehicle.vehicleId, trail);
+    }
+  }
+
+  return [...trailsByVehicleID.values()];
+}
+
 export function VehicleMap({
+  isReplayMode,
+  replayFrameIndex,
+  replayFrames,
+  replayTimestamp,
   vehicles,
   selectedVehicleId,
   routeShape,
@@ -82,9 +130,12 @@ export function VehicleMap({
     (point): MapPosition => [point.latitude, point.longitude]
   );
   const routeLineColor = routeColor ?? defaultRouteColor;
+  const displayedTrails = isReplayMode
+    ? buildReplayTrails(replayFrames, replayFrameIndex)
+    : vehicleTrails;
 
   return (
-    <section className="map-panel" aria-label="Live vehicle map">
+    <section className="map-panel" aria-label={isReplayMode ? "Historical vehicle replay map" : "Live vehicle map"}>
       <MapContainer center={montrealCenter} zoom={12} scrollWheelZoom className="map">
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
@@ -103,7 +154,7 @@ export function VehicleMap({
             positions={shapePositions}
           />
         ) : null}
-        {vehicleTrails.flatMap((trail) => {
+        {displayedTrails.flatMap((trail) => {
           const latestVehicle = vehicles.find((vehicle) => vehicle.vehicleId === trail.vehicleId);
           const isSelected = trail.vehicleId === selectedVehicleId;
           const trailColor = isSelected
@@ -143,7 +194,11 @@ export function VehicleMap({
                   <strong>{vehicle.vehicleId}</strong>
                   <span>Route {vehicle.routeId}</span>
                   <span>{formatSpeed(vehicle.speed)}</span>
-                  <span>{formatAge(vehicle.timestamp)}</span>
+                  <span>
+                    {isReplayMode
+                      ? `Replay frame ${formatDateTime(replayTimestamp ?? vehicle.timestamp)}`
+                      : formatAge(vehicle.timestamp)}
+                  </span>
                   <span>{statusLabel(vehicle.status)}</span>
                 </div>
               </Popup>

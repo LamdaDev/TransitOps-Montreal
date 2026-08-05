@@ -1,4 +1,9 @@
-import type { DashboardData, IngestResult } from "../types/transit";
+import type {
+  DashboardData,
+  IngestResult,
+  RouteHistory,
+  RouteReplay
+} from "../types/transit";
 
 const GRAPHQL_URL =
   import.meta.env.VITE_GRAPHQL_URL ?? "http://localhost:8080/graphql";
@@ -102,4 +107,91 @@ export async function triggerMockIngestion(): Promise<IngestResult> {
   );
 
   return data.ingestMock;
+}
+
+export async function fetchRouteHistory(
+  routeId: string,
+  rangeMinutes: number
+): Promise<RouteHistory> {
+  const data = await graphQLRequest<{ routeHistory: RouteHistory }>(
+    `
+      query RouteHistory($routeId: String!, $rangeMinutes: Int!) {
+        routeHistory(routeId: $routeId, rangeMinutes: $rangeMinutes) {
+          routeId
+          from
+          to
+          bucketSeconds
+          points {
+            timestamp
+            hasData
+            activeVehicleCount
+            staleVehicleCount
+            bunchingEventCount
+            largestHeadwayGapMinutes
+            averageSpacingMinutes
+            healthStatus
+          }
+          events {
+            timestamp
+            type
+            description
+            count
+          }
+        }
+      }
+    `,
+    { routeId, rangeMinutes }
+  );
+
+  return data.routeHistory;
+}
+
+export async function fetchRouteReplay(
+  routeId: string,
+  rangeMinutes: number
+): Promise<RouteReplay> {
+  const data = await graphQLRequest<{ routeReplay: RouteReplay }>(
+    `
+      query RouteReplay($routeId: String!, $rangeMinutes: Int!) {
+        routeReplay(routeId: $routeId, rangeMinutes: $rangeMinutes) {
+          routeId
+          from
+          to
+          stepSeconds
+          frames {
+            timestamp
+            hasData
+            vehicles {
+              id
+              vehicleId
+              routeId
+              tripId
+              latitude
+              longitude
+              speed
+              routeProgress
+              timestamp
+              source
+              createdAt
+              status
+            }
+            metrics {
+              routeId
+              activeVehicleCount
+              staleVehicleCount
+              bunchingEventCount
+              largestHeadwayGapMinutes
+              averageSpacingMinutes
+              healthStatus
+              lastUpdated
+            }
+            insights
+          }
+        }
+      }
+    `,
+    { routeId, rangeMinutes }
+  );
+
+  return data.routeReplay;
 }

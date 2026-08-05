@@ -3,10 +3,11 @@ import type { RouteMetrics } from "../types/transit";
 import { formatDateTime } from "../utils/format";
 
 interface SummaryCardsProps {
+  isReplay?: boolean;
   metrics: RouteMetrics;
 }
 
-export function SummaryCards({ metrics }: SummaryCardsProps) {
+export function SummaryCards({ isReplay = false, metrics }: SummaryCardsProps) {
   const cards = [
     {
       label: "Active vehicles",
@@ -14,7 +15,7 @@ export function SummaryCards({ metrics }: SummaryCardsProps) {
       icon: BusFront
     },
     {
-      label: "Last updated",
+      label: isReplay ? "Observed at" : "Last updated",
       value: formatDateTime(metrics.lastUpdated),
       icon: Radio
     },
